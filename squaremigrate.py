@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import os
 import re
 import subprocess
@@ -10,6 +11,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import html2markdown
+import rfc3339
 
 tree = ET.parse(sys.argv[1])
 root = tree.getroot()
@@ -45,25 +47,33 @@ for item in items:
 
 # now do the actual bits we're interested in
 for item in items:
-    status = item.find('wp:status', namespaces=namespaces).text
-    if status != 'publish':
-        print("skipping unpublished article")
-        continue
-    link = item.find('link').text
-    
     try:
-        posted = item.find('wp:post_date', namespaces=namespaces).text
         type = item.find('wp:post_type', namespaces=namespaces).text
     except:
         continue
-        
     if type == "attachment":
         continue
+
+    link = item.find('link').text
+    status = item.find('wp:status', namespaces=namespaces).text
+    if status != 'publish':
+        print(f'skipping unpublished article {link}')
+        continue
+
+    pubdate = item.find('pubDate').text
+    date = datetime.datetime.strptime(pubdate, '%a, %d %b %Y %H:%M:%S %z')
 
     title = item.find('title').text
     original_url = item.find('wp:post_name', namespaces=namespaces).text 
     post_name = original_url.split('/')[-1]
     original_link = item.find('link').text
+    
+    
+    prefix = 'blog/' if type == 'post' else ''
+    location = f'{prefix}{original_url}'
+    
+    if os.path.exists(f'content/{location}/index.md'):
+        continue
     
     # Is there a specific thumbnail for this post?
     image_url_list = []
@@ -90,6 +100,9 @@ for item in items:
         replace('<li><p class="" style="white-space:pre-wrap;">', '<li>').\
         replace('</p></li>', '</li>').\
         replace('data-animation-override', '').\
+        replace('data-dynamic-strings', '').\
+        replace('novalidate', '').\
+        replace('xlink:', '').\
         replace('script async defer', 'script')
         
     # This is a more complex one to get youtube videos into a tag. Not all iframes will break
@@ -103,6 +116,7 @@ for item in items:
         doctree = ET.fromstring(f'<root>{body_html}</root>')
     except ET.ParseError as e:
         lines = body_html.split('\n')
+        print(f'Error in {link}')
         print(f'{lines[e.position[0] - 1][:e.position[1] + 10]}')
         print("".join([' '] * e.position[1]) + '^')
         raise
@@ -128,16 +142,23 @@ for item in items:
 
         elif node.tag == "div":
             noscripts = [x for x in node.iter('noscript')]
-            if len(noscripts) < 1:
-                print("%s" % ET.tostring(node))
-                raise Exception()
-            for noscript in noscripts:
-                imgnode = noscript.find('img')
-                url = imgnode.attrib['src']
-                image_url_list.append(url)
-                filename = url.split('/')[-1].replace('+', '_').replace('%', '_')
-
-                body += f'{{{{< figure {filename} >}}}}\n\n'
+            if len(noscripts) >= 1:
+                for noscript in noscripts:
+                    imgnode = noscript.find('img')
+                    url = imgnode.attrib['src']
+                    image_url_list.append(url)
+                    filename = url.split('/')[-1].replace('+', '_').replace('%', '_')
+                    body += f'{{{{< figure {filename} >}}}}\n\n'
+            else:
+                for child in node:
+                    if child.tag == 'img':
+                        url = imgnode.attrib['src']
+                        image_url_list.append(url)
+                        filename = url.split('/')[-1].replace('+', '_').replace('%', '_')
+                        body += f'{{{{< figure {filename} >}}}}\n\n'
+                    else:
+                        print(f"*** {node}")
+                        
 
         elif node.tag == "pre":
             if len(node.getchildren()) > 0:
@@ -162,17 +183,10 @@ for item in items:
         else:
             print('***', node.tag, node.text)
 
-
-    prefix = 'blog/' if type == 'post' else ''
-    location = f'{prefix}{original_url}'
-
     try:
         subprocess.run(['hugo', 'new', f'{location}/index.md'], check=True)
     except:
         pass
-
-    date_parts = posted.split(' ')
-    date = f"{date_parts[0]}T{date_parts[1]}+00:00"
     
     if thumbnail is None:
         try:
@@ -184,7 +198,7 @@ for item in items:
         f.write(f"""
 ---
 title: "{title}"
-date: "{date}"
+date: "{rfc3339.rfc3339(date)}"
 draft: false
 """)
         if tags:
