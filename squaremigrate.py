@@ -25,12 +25,29 @@ def recursivelyStripMostAttributes(node):
     for key in [x for x in node.attrib]:
         if key not in ATTRIB_KEEP_LIST:
             del(node.attrib[key])
-    for child in node.getchildren():
+    for child in node:
         recursivelyStripMostAttributes(child)
 
+# First we want to do a scan for attachments, as they can appear after the item they're referenced
+# from
+attachments = {}
+for item in items:
+    try:
+        type = item.find('wp:post_type', namespaces=namespaces).text
+        if type != "attachment":
+            continue
+        post_id = item.find('wp:post_id', namespaces=namespaces).text
+        url = item.find('link').text
+        attachments[post_id] = url
+    except:
+        continue 
+    
+
+# now do the actual bits we're interested in
 for item in items:
     status = item.find('wp:status', namespaces=namespaces).text
     if status != 'publish':
+        print("skipping unpublished article")
         continue
     link = item.find('link').text
     
@@ -48,9 +65,20 @@ for item in items:
     post_name = original_url.split('/')[-1]
     original_link = item.find('link').text
     
-    # if already generated skip
-    # if os.path.isdir(f'content/blog/{post_name}/'):
-    #     continue
+    # Is there a specific thumbnail for this post?
+    image_url_list = []
+    thumbnail = None
+    
+    meta = item.find('wp:postmeta', namespaces=namespaces)
+    if meta:
+        meta_key = meta.find('wp:meta_key', namespaces=namespaces).text
+        if meta_key == '_thumbnail_id':
+            meta_value = meta.find('wp:meta_value', namespaces=namespaces).text
+            attachment_id = meta_value
+            thumbnail = attachments[attachment_id]
+            image_url_list.append(thumbnail)
+        else:
+            print(f'Unknown meta key: {meta_key}')
 
     tags = [x.text for x in item.findall('category')]
 
@@ -78,10 +106,10 @@ for item in items:
         print(f'{lines[e.position[0] - 1][:e.position[1] + 10]}')
         print("".join([' '] * e.position[1]) + '^')
         raise
-    image_url_list = []
+    
     body = ""
     pre_builder = ""
-    for node in doctree.getchildren():
+    for node in doctree:
         
         # squarespace sometimes breaks up code blocks into blocks per line
         # so this is to try undo that
@@ -118,6 +146,8 @@ for item in items:
                     pre_builder += f'{child.text}\n'
             else:
                 pre_builder += f'{node.text}\n'
+        elif node.tag == 'h1':
+            body += f'# {node.text}\n\n'
         elif node.tag == "h2":
             body += f'## {node.text}\n\n'
         elif node.tag == "h3":
@@ -143,6 +173,12 @@ for item in items:
 
     date_parts = posted.split(' ')
     date = f"{date_parts[0]}T{date_parts[1]}+00:00"
+    
+    if thumbnail is None:
+        try:
+            thumbnail = image_url_list[0]
+        except IndexError:
+            pass
 
     with open(f'content/{location}/index.md', 'w') as f:
         f.write(f"""
@@ -156,8 +192,13 @@ draft: false
             for tag in tags:
                 f.write(f"- {tag}\n")
         
-        if location != original_link:
+        if location != original_link[1:]:
+            print(location, original_link)
             f.write(f'aliases:\n- {original_link}\n')
+            
+        if thumbnail:
+            filename = thumbnail.split('/')[-1].replace('+', '_').replace('%', '_')
+            f.write(f'titleimage: {filename}\n')
 
         f.write("---\n")
         f.write(body)
